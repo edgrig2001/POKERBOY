@@ -59,7 +59,7 @@ def get_user(uid):
     return user
 
 def update(uid, chips):
-   chips = max(0, chips)
+    chips = max(0, chips)   # баланс не может быть отрицательным, верхний лимит снят
     cursor.execute("UPDATE users SET chips=? WHERE user_id=?", (chips, uid))
     conn.commit()
 
