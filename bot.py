@@ -142,55 +142,45 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE, data=None):
             text+=f"{i}. {u[0]} — {fmt(u[1])}\n"
         await q.edit_message_text(text, reply_markup=back())
 
-    # ---------- CRASH ----------
-    elif data=="crash":
-        await q.edit_message_text("💰 Введите ставку:", reply_markup=back())
-        user_state[uid]={"game":"crash"}
+    # ================= CRASH =================
+elif data == "crash":
+    await q.edit_message_text("💰 Введите ставку:", reply_markup=back())
+    user_state[user_id] = {"crash": True}
 
-    elif data=="cashout":
-        game=games.get(uid)
-        if not game: return
-        game["stop"]=True
-        mult=round(game["mult"],2)
-        win=int(game["bet"]*mult)
-        chips,_ ,_=get_user(uid)
-        update_chips(uid,chips+win)
-        await game["msg"].edit_text(f"💸 Вы забрали x{mult}\n+{fmt(win)}", reply_markup=main_menu())
-        games.pop(uid)
+elif data == "cashout":
+    game = games.get(user_id)
+    if not game:
+        return
+    game["stop"] = True
+    mult = game["mult"]
+    win = int(game["bet"] * mult)
+    update_chips(user_id, get_user(user_id)[0] + win)
+    await game["msg"].edit_text(f"💸 Забрали x{mult}\n+{win}", reply_markup=main_menu())
+    games.pop(user_id)
 
-    # ---------- SLOTS ----------
-    elif data=="slots":
-        await q.edit_message_text("💰 Введите ставку для SLOTS:", reply_markup=back())
-        user_state[uid]={"game":"slots"}
+# ================= SLOTS =================
+elif data == "slots":
+    chips, _, _ = get_user(user_id)
+    bet = min(500, chips)
 
-    elif data=="spin":
-        state=user_state.get(uid)
-        if not state or "bet" not in state: return
-        bet=state["bet"]
-        chips,_ ,_=get_user(uid)
-        if bet>chips:
-            await q.edit_message_text("❗ Недостаточно фишек", reply_markup=back())
-            return
-        update_chips(uid,chips-bet)
+    symbols = ["🍒","🍋","⭐","💎"]
+    weights = [55,25,15,5]
 
-        # Символы и их вероятность
-        symbols=["🍒","🍋","⭐","💎"]
-        weights=[55,25,15,5]
-        result=random.choices(symbols,weights,k=3)
+    result = random.choices(symbols, weights, k=3)
 
-        if result[0]==result[1]==result[2]:
-            mult={"🍒":2,"⭐":3,"💎":5}.get(result[0],1)
-            win=bet*mult
-            update_chips(uid,get_user(uid)[0]+win)
-            text=f"{' '.join(result)}\n🎉 Вы выиграли {fmt(win)} (+{mult}x)"
-        elif len(set(result))==2:
-            text=f"{' '.join(result)}\n😐 Возврат"
-        else:
-            text=f"{' '.join(result)}\n😢 Проиграли -{fmt(bet)}"
+    if result[0] == result[1] == result[2]:
+        mult = {"🍒":2,"⭐":3,"💎":5}.get(result[0],1)
+        win = bet * mult
+        update_chips(user_id, chips + win)
+        text = f"{' '.join(result)}\n🎉 x{mult} (+{win})"
+    elif len(set(result)) == 2:
+        update_chips(user_id, chips)
+        text = f"{' '.join(result)}\n😐 Возврат"
+    else:
+        update_chips(user_id, chips - bet)
+        text = f"{' '.join(result)}\n😢 -{bet}"
 
-        await q.edit_message_text(text, reply_markup=main_menu())
-        user_state.pop(uid,None)
-
+    await q.edit_message_text(text, reply_markup=main_menu())
     # ---------- DOUBLE ----------
     elif data=="double":
         await q.edit_message_text("💰 Введите ставку для DOUBLE:", reply_markup=back())
@@ -217,39 +207,47 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE, data=None):
         await q.edit_message_text(text, reply_markup=main_menu())
         user_state.pop(uid,None)
 
-    # ---------- ROULETTE ----------
-    elif data=="roulette":
-        await q.edit_message_text("💰 Введите ставку для ROULETTE:", reply_markup=back())
-        user_state[uid]={"game":"roulette"}
+   # ================= ROULETTE =================
+elif data == "roulette":
+    await q.edit_message_text("💰 Введите ставку для ROULETTE:", reply_markup=back())
+    user_state[user_id] = {"roulette": True}
 
-    elif data.startswith("roulette_spin"):
-        state=user_state.get(uid)
-        if not state or "bet" not in state: return
-        bet=state["bet"]
-        chips,_ ,_=get_user(uid)
-        if bet>chips:
-            await q.edit_message_text("❗ Недостаточно фишек", reply_markup=back())
-            return
-        update_chips(uid,chips-bet)
-        # Выполнение рулетки
-        outcome=random.randint(0,36)
-        colors={0:"green"}
-        for i in range(1,37):
-            colors[i]="red" if i%2==0 else "black"  # простая схема
-        choice=state.get("choice")
-        win=0
-        text=""
-        if choice==str(outcome) or choice==colors[outcome]:
-            if choice==str(outcome):
-                win=bet*35
-            else:
-                win=bet*2
-            update_chips(uid,get_user(uid)[0]+win)
-            text=f"🎉 Выпало {outcome} ({colors[outcome]})! Вы выиграли {fmt(win)}"
+elif data.startswith("roulette_spin"):
+    state = user_state.get(user_id)
+    if not state or "bet" not in state:
+        await q.edit_message_text("❗ Введите ставку сначала", reply_markup=back())
+        return
+
+    bet = state["bet"]
+    chips, _, _ = get_user(user_id)
+    if bet > chips:
+        await q.edit_message_text("❗ Недостаточно фишек", reply_markup=back())
+        return
+    update_chips(user_id, chips - bet)
+
+    # Определяем исход
+    outcome = random.randint(0, 36)
+    colors = {0: "green"}
+    for i in range(1, 37):
+        colors[i] = "red" if i % 2 == 0 else "black"
+
+    choice = state.get("choice")  # число или color
+    win = 0
+    text = ""
+
+    # Проверка результата
+    if choice == str(outcome) or choice == colors[outcome]:
+        if choice == str(outcome):
+            win = bet * 35
         else:
-            text=f"💀 Выпало {outcome} ({colors[outcome]}). Проигрыш -{fmt(bet)}"
-        await q.edit_message_text(text, reply_markup=main_menu())
-        user_state.pop(uid,None)
+            win = bet * 2
+        update_chips(user_id, get_user(user_id)[0] + win)
+        text = f"🎉 Выпало {outcome} ({colors[outcome].upper()})! Вы выиграли {win}"
+    else:
+        text = f"💀 Выпало {outcome} ({colors[outcome].upper()}). Проигрыш -{bet}"
+
+    await q.edit_message_text(text, reply_markup=main_menu())
+    user_state.pop(user_id, None)
 # ---------------- MESSAGE HANDLER ----------------
 async def message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.chat.id
