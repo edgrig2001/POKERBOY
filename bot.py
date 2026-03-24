@@ -3,6 +3,7 @@ import sqlite3
 import threading
 import random
 import datetime
+import asyncio
 from flask import Flask
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -25,48 +26,42 @@ def run_web():
 # ---------------- Token ----------------
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 if not TOKEN:
-    print("Нет токена")
     exit()
 
 # ---------------- DB ----------------
-conn = sqlite3.connect("poker.db", check_same_thread=False)
+conn = sqlite3.connect("casino.db", check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     chips INTEGER,
-    last_bonus TEXT
+    last_bonus TEXT,
+    referred INTEGER DEFAULT 0
 )
 """)
+
 conn.commit()
 
 user_state = {}
 games = {}
 
-# ---------------- Карты ----------------
-suits = ["♠️", "♥️", "♦️", "♣️"]
-ranks = ["2","3","4","5","6","7","8","9","10","J","Q","K","A"]
-
-def draw_cards(n=2):
-    return [random.choice(ranks)+random.choice(suits) for _ in range(n)]
-
-# ---------------- Фишки ----------------
+# ---------------- USER ----------------
 def get_user(user_id):
-    user = cursor.execute("SELECT chips,last_bonus FROM users WHERE user_id=?", (user_id,)).fetchone()
+    user = cursor.execute("SELECT chips,last_bonus,referred FROM users WHERE user_id=?", (user_id,)).fetchone()
     if not user:
-        cursor.execute("INSERT INTO users VALUES (?,?,?)", (user_id, 5000, ""))
+        cursor.execute("INSERT INTO users VALUES (?,?,?,?)", (user_id, 5000, "", 0))
         conn.commit()
-        return 5000, ""
+        return 5000, "", 0
     return user
 
 def update_chips(user_id, chips):
-    chips = min(chips, 15000)
+    chips = max(0, min(chips, 15000))
     cursor.execute("UPDATE users SET chips=? WHERE user_id=?", (chips, user_id))
     conn.commit()
 
 def daily_bonus(user_id):
-    chips, last = get_user(user_id)
+    chips, last, _ = get_user(user_id)
     today = str(datetime.date.today())
     if last != today:
         chips += 5000
@@ -76,29 +71,39 @@ def daily_bonus(user_id):
         return True, chips
     return False, chips
 
-# ---------------- Меню ----------------
+# ---------------- MENU ----------------
 def main_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🃏 Играть в покер", callback_data="poker")],
+        [InlineKeyboardButton("🚀 CRASH", callback_data="crash")],
+        [InlineKeyboardButton("🎰 SLOTS", callback_data="slots")],
         [InlineKeyboardButton("🎲 Мини-игра", callback_data="mini")],
         [InlineKeyboardButton("👤 Профиль", callback_data="profile")],
         [InlineKeyboardButton("🎁 Бонус", callback_data="bonus")],
+        [InlineKeyboardButton("👥 Рефералка", callback_data="ref")],
+        [InlineKeyboardButton("🏆 Топ", callback_data="top")]
     ])
 
-def back_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Назад", callback_data="menu")]
-    ])
+def back():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="menu")]])
 
 # ---------------- START ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("♠️ Добро пожаловать в Poker Bot!", reply_markup=main_menu())
+    user_id = update.message.chat.id
+    args = context.args
 
-# ---------------- PROFILE ----------------
-async def profile_text(user_id):
-    chips, _ = get_user(user_id)
-    return f"👤 Профиль\n\n💰 Фишки: {chips}"
+    if args:
+        try:
+            ref_id = int(args[0])
+            if ref_id != user_id:
+                chips, _, referred = get_user(ref_id)
+                if not referred:
+                    update_chips(ref_id, chips + 15000)
+                    cursor.execute("UPDATE users SET referred=1 WHERE user_id=?", (ref_id,))
+                    conn.commit()
+        except:
+            pass
 
+    await update.message.reply_text("🎰 Казино Bot", reply_markup=main_menu())
 # ---------------- BUTTON ----------------
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -106,125 +111,162 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = q.from_user.id
     data = q.data
 
-    # --- МЕНЮ ---
     if data == "menu":
         await q.edit_message_text("🏠 Главное меню", reply_markup=main_menu())
 
-    # --- ПРОФИЛЬ ---
     elif data == "profile":
-        await q.edit_message_text(await profile_text(user_id), reply_markup=back_menu())
+        chips, _, _ = get_user(user_id)
+        await q.edit_message_text(f"👤 Профиль\n💰 {chips}", reply_markup=back())
 
-    # --- БОНУС ---
     elif data == "bonus":
         ok, chips = daily_bonus(user_id)
-        text = "🎁 Вы получили 5000!" if ok else "❗ Уже получали сегодня"
-        await q.edit_message_text(f"{text}\n💰 Сейчас: {chips}", reply_markup=back_menu())
+        await q.edit_message_text(f"{'🎁 +5000' if ok else '❗ Уже получали'}\n💰 {chips}", reply_markup=back())
 
-    # ================= ПОКЕР =================
-    elif data == "poker":
-        games[user_id] = {
-            "player": draw_cards(),
-            "bot": draw_cards(),
-            "bank": 1000
-        }
-        await show_game(q, user_id)
+    elif data == "ref":
+        link = f"https://t.me/{context.bot.username}?start={user_id}"
+        await q.edit_message_text(f"👥 Ссылка:\n{link}", reply_markup=back())
 
-    elif data.startswith("act_"):
+    elif data == "top":
+        users = cursor.execute("SELECT user_id, chips FROM users ORDER BY chips DESC LIMIT 5").fetchall()
+        text = "🏆 Топ игроков:\n\n"
+        for i,u in enumerate(users,1):
+            text += f"{i}. {u[0]} — {u[1]}\n"
+        await q.edit_message_text(text, reply_markup=back())
+
+    # ================= CRASH =================
+    elif data == "crash":
+        await q.edit_message_text("💰 Введите ставку:", reply_markup=back())
+        user_state[user_id] = {"crash": True}
+
+    elif data == "cashout":
         game = games.get(user_id)
-        if not game:
-            return
+        if not game: return
 
-        action = data.split("_")[1]
+        game["stop"] = True
+        mult = game["mult"]
 
-        player_score = random.randint(1,100)
-        bot_score = random.randint(1,100)
+        win = int(game["bet"] * mult)
+        update_chips(user_id, get_user(user_id)[0] + win)
 
-        if action == "fold":
-            result = "😢 Вы сбросили карты"
-            update_chips(user_id, get_user(user_id)[0] - 500)
+        await game["msg"].edit_text(f"💸 Забрали x{mult}\n+{win}", reply_markup=main_menu())
+        games.pop(user_id)
 
+    # ================= SLOTS =================
+    elif data == "slots":
+        chips, _, _ = get_user(user_id)
+        bet = min(500, chips)
+
+        symbols = ["🍒","🍋","⭐","💎"]
+        weights = [55,25,15,5]
+
+        result = random.choices(symbols, weights, k=3)
+
+        if result[0]==result[1]==result[2]:
+            mult = {"🍒":2,"⭐":3,"💎":5}.get(result[0],1)
+            win = bet * mult
+            update_chips(user_id, chips + win)
+            text = f"{' '.join(result)}\n🎉 x{mult} (+{win})"
+        elif len(set(result))==2:
+            update_chips(user_id, chips)
+            text = f"{' '.join(result)}\n😐 Возврат"
         else:
-            if player_score >= bot_score:
-                result = "🏆 Вы выиграли!"
-                update_chips(user_id, get_user(user_id)[0] + 1000)
-            else:
-                result = "💀 Вы проиграли"
-                update_chips(user_id, get_user(user_id)[0] - 1000)
+            update_chips(user_id, chips - bet)
+            text = f"{' '.join(result)}\n😢 -{bet}"
 
-        await q.edit_message_text(result, reply_markup=main_menu())
+        await q.edit_message_text(text, reply_markup=main_menu())
 
-    # ================= МИНИ ИГРА =================
+    # ================= MINI =================
     elif data == "mini":
-        buttons = []
-        for i in range(1,16):
-            buttons.append([InlineKeyboardButton(str(i), callback_data=f"mini_{i}")])
-        await q.edit_message_text("🎲 Выбери число:", reply_markup=InlineKeyboardMarkup(buttons))
+        kb = [[InlineKeyboardButton(str(i), callback_data=f"mini_{i}")] for i in range(1,16)]
+        await q.edit_message_text("🎲 Выбери число", reply_markup=InlineKeyboardMarkup(kb))
 
     elif data.startswith("mini_"):
         num = int(data.split("_")[1])
         user_state[user_id] = {"mini": num}
-        await q.edit_message_text(f"💰 Сколько ставишь на {num}?", reply_markup=back_menu())
+        await q.edit_message_text(f"💰 Ставка на {num}?", reply_markup=back())
+
+# ---------------- CRASH LOOP ----------------
+async def crash_loop(context, user_id):
+    game = games[user_id]
+
+    while True:
+        await asyncio.sleep(1)
+
+        if game.get("stop"):
+            return
+
+        game["mult"] += round(random.uniform(0.2,0.8),2)
+
+        if random.random() < 0.2:
+            await game["msg"].edit_text(f"💥 КРАШ на x{game['mult']}\nВы проиграли", reply_markup=main_menu())
+            games.pop(user_id)
+            return
+
+        await game["msg"].edit_text(
+            f"🚀 x{round(game['mult'],2)}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💸 Забрать", callback_data="cashout")]])
+        )
 
 # ---------------- MESSAGE ----------------
 async def message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.chat.id
     text = update.message.text
-
     state = user_state.get(user_id)
 
-    if state and "mini" in state:
-        try:
-            bet = int(text)
-        except:
-            await update.message.reply_text("❗ Введи число")
-            return
+    if state and "crash" in state:
+        bet = int(text)
+        chips, _, _ = get_user(user_id)
 
-        chips, _ = get_user(user_id)
         if bet > chips:
-            await update.message.reply_text("❗ Недостаточно фишек")
+            await update.message.reply_text("❗ Недостаточно")
             return
 
-        roll = random.randint(1,15)
+        update_chips(user_id, chips - bet)
 
-        if roll == state["mini"]:
-            win = bet * 5
-            update_chips(user_id, chips + win)
-            await update.message.reply_text(f"🎉 Выпало {roll}\nВы выиграли {win}!")
-        else:
-            update_chips(user_id, chips - bet)
-            await update.message.reply_text(f"😢 Выпало {roll}\nВы проиграли")
+        msg = await update.message.reply_text("🚀 x1.0")
+
+        games[user_id] = {"bet": bet, "mult": 1.0, "msg": msg}
+
+        context.application.create_task(crash_loop(context, user_id))
 
         user_state.pop(user_id)
         return
 
+    if state and "mini" in state:
+        bet = int(text)
+        chips, _, _ = get_user(user_id)
+
+        if bet > chips:
+            await update.message.reply_text("❗ Недостаточно")
+            return
+
+        chips -= bet
+        roll = random.randint(1,15)
+
+        if roll == state["mini"]:
+            win = bet * 5
+            chips += win
+            await update.message.reply_text(f"🎉 {roll}\n+{win}")
+        else:
+            await update.message.reply_text(f"😢 {roll}\n-{bet}")
+
+        update_chips(user_id, chips)
+        user_state.pop(user_id)
+        return
+
     await update.message.reply_text("❗ Используй кнопки", reply_markup=main_menu())
-
-# ---------------- SHOW GAME ----------------
-async def show_game(q, user_id):
-    game = games[user_id]
-
-    text = (
-        f"🃏 Покер\n\n"
-        f"Ваши карты: {' '.join(game['player'])}\n"
-        f"Банк: {game['bank']}\n\n"
-        f"Выберите действие:"
-    )
-
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Чек", callback_data="act_check"),
-         InlineKeyboardButton("📞 Колл", callback_data="act_call")],
-        [InlineKeyboardButton("💰 Алл-ин", callback_data="act_allin"),
-         InlineKeyboardButton("❌ Фолд", callback_data="act_fold")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="menu")]
-    ])
-
-    await q.edit_message_text(text, reply_markup=keyboard)
 
 # ---------------- RUN ----------------
 if __name__ == "__main__":
     threading.Thread(target=run_web).start()
 
     app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), message))
+
+    app.run_polling()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button))
