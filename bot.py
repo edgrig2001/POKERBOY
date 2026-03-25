@@ -156,7 +156,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         weights = [55,25,15,5]
         result = random.choices(symbols, weights, k=3)
         if result[0]==result[1]==result[2]:
-            mult = {"🍒":2,"⭐":3,"💎":5}.get(result[0],1)
+            mult = {"🍒":2,"⭐":10,"💎":25}.get(result[0],1)
             win = bet * mult
             update_chips(user_id, chips + win)
             text = f"{' '.join(result)}\n🎉 Вы выиграли {format_chips(win)}!"
